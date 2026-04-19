@@ -120,6 +120,7 @@ function findPrimaryContainer(body: HTMLElement): Element {
     const [onlyChild] = children;
     if (isStandalonePrimitive(onlyChild)) return current;
     if (isTableMultiColumnRow(onlyChild)) return current;
+    if (isTableHorizontalContentRow(onlyChild)) return current;
     if (isStyledRepeatedColumnSet(onlyChild)) return current;
     if (isStyledSingleColumnStrip(onlyChild)) return current;
     if (hasRepeatedSiblingPattern(getMeaningfulChildren(onlyChild))) return onlyChild;
@@ -197,6 +198,29 @@ function isTableMultiColumnRow(element: Element): boolean {
   if (!children.every((child) => child.tagName === 'TD' || child.tagName === 'TH')) return false;
   if (!hasRepeatedSiblingPattern(children)) return false;
   return children.every((child) => hasMediaDescendant(child) || hasTextualDescendant(child));
+}
+
+function countTextBearingDescendants(element: Element): number {
+  const candidates = [element, ...Array.from(element.querySelectorAll('*'))];
+  return candidates.filter((candidate) => {
+    if (MEDIA_TAGS.has(candidate.tagName)) return false;
+    return normalizedText(candidate.textContent ?? '').length > 0;
+  }).length;
+}
+
+function isTableHorizontalContentRow(element: Element): boolean {
+  if (element.tagName !== 'TR') return false;
+  const children = getMeaningfulChildren(element);
+  if (children.length < 2) return false;
+  if (!children.every((child) => child.tagName === 'TD' || child.tagName === 'TH')) return false;
+  if (hasRepeatedSiblingPattern(children)) return false;
+
+  const hasMediaCell = children.some((child) => hasMediaDescendant(child));
+  const hasTextStackCell = children.some(
+    (child) => !hasMediaDescendant(child) && countTextBearingDescendants(child) >= 2,
+  );
+
+  return hasMediaCell && hasTextStackCell;
 }
 
 function hasContainerVisualChrome(element: Element): boolean {
@@ -321,6 +345,7 @@ function detectBlockType(element: Element, repeated = false): SourceBlock['type'
     (BUTTON_TAGS.has(element.tagName) || (element.tagName === 'A' && hasButtonLikeAppearance(element)) ? 1 : 0);
   const mediaCount =
     element.querySelectorAll('img,svg,picture,video,canvas').length + (MEDIA_TAGS.has(element.tagName) ? 1 : 0);
+  const plainText = normalizedText(element.textContent ?? '');
 
   if (repeated) {
     if (element.querySelector('h1,h2,h3,h4,h5,h6,p')) return 'composite-item';
@@ -330,6 +355,7 @@ function detectBlockType(element: Element, repeated = false): SourceBlock['type'
   if (element.tagName === 'P') return 'paragraph';
   if (BUTTON_TAGS.has(element.tagName) || (element.tagName === 'A' && hasButtonLikeAppearance(element))) return 'button';
   if (MEDIA_TAGS.has(element.tagName) || isMediaContainer(element)) return 'image';
+  if (mediaCount > 0 && plainText.length > 0) return 'composite-item';
   if (mediaCount > 0 && headingCount === 0 && paragraphCount === 0 && buttonCount === 0) return 'image';
   if (headingCount > 0 && paragraphCount === 0 && buttonCount === 0 && mediaCount === 0) return 'heading';
   if (paragraphCount > 0 && headingCount === 0 && buttonCount === 0 && mediaCount === 0) return 'paragraph';
@@ -653,6 +679,32 @@ function firstTextBearingLeaf(element: Element): Element | null {
   return ranked[0]?.candidate ?? null;
 }
 
+function collectPlainTextLeafElements(block: Element): Element[] {
+  const candidates = [
+    ...(TEXT_TAGS.has(block.tagName) ? [block] : []),
+    ...Array.from(block.querySelectorAll(Array.from(TEXT_TAGS).map((tag) => tag.toLowerCase()).join(','))),
+  ];
+
+  return candidates.filter((candidate, index, allCandidates) => {
+    const text = normalizedText(candidate.textContent ?? '');
+    if (!text || isBulletLikeText(text)) return false;
+    if (candidate.querySelector('h1,h2,h3,h4,h5,h6,p,button')) return false;
+    if (candidate.tagName === 'A' && hasButtonLikeAppearance(candidate)) return false;
+    if (candidate.querySelector('table,tbody,tr,td,th')) return false;
+
+    const hasNestedTextCandidate = allCandidates.some((other) => {
+      if (other === candidate) return false;
+      const otherText = normalizedText(other.textContent ?? '');
+      if (!otherText || isBulletLikeText(otherText)) return false;
+      return candidate.contains(other);
+    });
+
+    if (hasNestedTextCandidate) return false;
+
+    return true;
+  });
+}
+
 function collectEditableTargets(block: Element, type: SourceBlock['type']): EditableTarget[] {
   const targets: EditableTarget[] = [];
 
@@ -745,27 +797,47 @@ function collectEditableTargets(block: Element, type: SourceBlock['type']): Edit
 
   const nonContainerTargets = targets.filter((target) => target.kind !== 'container');
 
-  if (
-    nonContainerTargets.length === 0 &&
-    (TEXT_TAGS.has(block.tagName) || normalizedText(block.textContent ?? '').length > 0)
-  ) {
-    const leaf = isStandalonePrimitive(block) ? block : firstTextBearingLeaf(block) ?? block;
-    const paddingOwner = findPaddingOwner(leaf, block) ?? leaf;
-    const styleOwner = findStyleOwner(leaf, block);
-    targets.push({
-      id: makeTargetId('text', elementPathFrom(block, leaf)),
-      kind: 'text',
-      label: 'Text',
-      path: elementPathFrom(block, leaf),
-      stylePath: elementPathFrom(block, styleOwner),
-      paddingPath: elementPathFrom(block, paddingOwner),
-      textContent: textPreview(leaf),
-      paddingDefaults: findPaddingDefault(leaf, block) ?? expandPaddingShorthand([]),
-      styleDefaults: extractStyleDefaults(styleOwner, block),
-      textTag: leaf.tagName.toLowerCase(),
-      styleTag: styleOwner.tagName.toLowerCase(),
-      paddingTag: paddingOwner.tagName.toLowerCase(),
-    });
+  if (nonContainerTargets.length === 0 && (TEXT_TAGS.has(block.tagName) || normalizedText(block.textContent ?? '').length > 0)) {
+    const plainTextLeaves = collectPlainTextLeafElements(block);
+
+    if (plainTextLeaves.length > 0) {
+      plainTextLeaves.forEach((leaf, index) => {
+        const paddingOwner = findPaddingOwner(leaf, block) ?? leaf;
+        const styleOwner = findStyleOwner(leaf, block);
+        targets.push({
+          id: makeTargetId('text', elementPathFrom(block, leaf)),
+          kind: 'text',
+          label: `Text ${index + 1}`,
+          path: elementPathFrom(block, leaf),
+          stylePath: elementPathFrom(block, styleOwner),
+          paddingPath: elementPathFrom(block, paddingOwner),
+          textContent: textPreview(leaf),
+          paddingDefaults: findPaddingDefault(leaf, block) ?? expandPaddingShorthand([]),
+          styleDefaults: extractStyleDefaults(styleOwner, block),
+          textTag: leaf.tagName.toLowerCase(),
+          styleTag: styleOwner.tagName.toLowerCase(),
+          paddingTag: paddingOwner.tagName.toLowerCase(),
+        });
+      });
+    } else {
+      const leaf = isStandalonePrimitive(block) ? block : firstTextBearingLeaf(block) ?? block;
+      const paddingOwner = findPaddingOwner(leaf, block) ?? leaf;
+      const styleOwner = findStyleOwner(leaf, block);
+      targets.push({
+        id: makeTargetId('text', elementPathFrom(block, leaf)),
+        kind: 'text',
+        label: 'Text',
+        path: elementPathFrom(block, leaf),
+        stylePath: elementPathFrom(block, styleOwner),
+        paddingPath: elementPathFrom(block, paddingOwner),
+        textContent: textPreview(leaf),
+        paddingDefaults: findPaddingDefault(leaf, block) ?? expandPaddingShorthand([]),
+        styleDefaults: extractStyleDefaults(styleOwner, block),
+        textTag: leaf.tagName.toLowerCase(),
+        styleTag: styleOwner.tagName.toLowerCase(),
+        paddingTag: paddingOwner.tagName.toLowerCase(),
+      });
+    }
   }
 
   return targets;
@@ -808,6 +880,11 @@ function collectSingleSectionBlocks(container: Element, blocks: Element[]): void
     }
 
     if (isStyledSingleColumnStrip(child)) {
+      blocks.push(child);
+      return;
+    }
+
+    if (isTableHorizontalContentRow(child)) {
       blocks.push(child);
       return;
     }
@@ -1100,6 +1177,30 @@ export function renderCanvasItemHtml(block: SourceBlock, item: CanvasItem): stri
       }
     }
   });
+
+  if (block.previewSurfaceStyle) {
+    const surfaceTarget =
+      root.tagName === 'TR'
+        ? Array.from(root.children).find((child) => child.tagName === 'TD' || child.tagName === 'TH') ?? root
+        : root;
+    const styleMap = parseStyleAttribute(surfaceTarget.getAttribute('style') ?? '');
+    if (block.previewSurfaceStyle.background && !styleMap.background) {
+      styleMap.background = block.previewSurfaceStyle.background;
+    }
+    if (block.previewSurfaceStyle.backgroundColor && !styleMap['background-color']) {
+      styleMap['background-color'] = block.previewSurfaceStyle.backgroundColor;
+    }
+    if (block.previewSurfaceStyle.color && !styleMap.color) {
+      styleMap.color = block.previewSurfaceStyle.color;
+    }
+    const nextStyle = Object.entries(styleMap)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join('; ');
+    if (nextStyle) {
+      surfaceTarget.setAttribute('style', nextStyle);
+    }
+  }
+
   return root.outerHTML;
 }
 
@@ -1140,19 +1241,14 @@ export function buildOutputHtml(
     .filter(Boolean)
     .join('\n');
 
-  if (!template.rawHtml.toLowerCase().includes('<html')) {
-    return items
-      .map((item) => {
-        const block = blocks.find((candidate) => candidate.id === item.sourceBlockId);
-        return block ? buildRenderableFragmentHtml(renderCanvasItemHtml(block, item)) : '';
-      })
-      .filter(Boolean)
-      .join('\n');
-  }
-
   const doc = parseDocument(template.rawHtml);
   const root = findPrimaryContainer(doc.body);
   root.innerHTML = fragments;
+  if (!template.rawHtml.toLowerCase().includes('<html')) {
+    const snippetRoot = getMeaningfulChildren(doc.body)[0] ?? root;
+    return snippetRoot.outerHTML;
+  }
+
   return `${template.doctype ? `${template.doctype}\n` : ''}${doc.documentElement.outerHTML}`;
 }
 

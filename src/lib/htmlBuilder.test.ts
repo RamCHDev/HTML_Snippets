@@ -340,6 +340,101 @@ describe('extractBlocks', () => {
     expect(blocks[0].previewSurfaceStyle?.color).toBe('#f4efe2');
   });
 
+  it('treats a horizontal media-plus-text row as a single reusable block', () => {
+    const html = `
+      <html><body>
+        <table role="presentation" width="100%">
+          <tbody>
+            <tr>
+              <td width="120" valign="top">
+                <img src="logo.png" width="90" />
+              </td>
+              <td valign="top">
+                <table role="presentation" width="100%">
+                  <tbody>
+                    <tr><td>Name</td></tr>
+                    <tr><td>Title</td></tr>
+                    <tr><td>TFN - Primary</td></tr>
+                    <tr><td>Location</td></tr>
+                    <tr><td>Address</td></tr>
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </body></html>
+    `;
+
+    const blocks = extractBlocks(html);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe('composite-item');
+    expect(blocks[0].originalHtml.trim().startsWith('<tr>')).toBe(true);
+    const textTargets = blocks[0].editableTargets.filter((target) => target.kind === 'text');
+    expect(textTargets.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('renders editable typography and padding overrides for a horizontal media-plus-text row', () => {
+    const html = `
+      <html><body>
+        <table role="presentation" width="100%">
+          <tbody>
+            <tr>
+              <td width="120" valign="top">
+                <img src="logo.png" width="90" />
+              </td>
+              <td valign="top" style="background-color:#f7f3e8;color:#1a1a1a;">
+                <table role="presentation" width="100%">
+                  <tbody>
+                    <tr><td style="font-size:16px;line-height:20px;padding:2px 0;">Name</td></tr>
+                    <tr><td style="font-size:14px;line-height:18px;padding:1px 0;">Title</td></tr>
+                    <tr><td style="font-size:18px;line-height:22px;padding:3px 0;">TFN - Primary</td></tr>
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </body></html>
+    `;
+
+    const [block] = extractBlocks(html);
+    const firstTextTarget = block.editableTargets.find((target) => target.kind === 'text' && target.textContent === 'Name');
+    expect(firstTextTarget).toBeDefined();
+
+    const item: CanvasItem = {
+      instanceId: 'instance-horizontal-row',
+      sourceBlockId: block.id,
+      overrides: {
+        [firstTextTarget!.id]: {
+          textContent: 'Full Name',
+          style: {
+            paddingTopValue: '10',
+            paddingTopUnit: 'px',
+            paddingRightValue: '0',
+            paddingRightUnit: 'px',
+            paddingBottomValue: '10',
+            paddingBottomUnit: 'px',
+            paddingLeftValue: '0',
+            paddingLeftUnit: 'px',
+            fontSizeValue: '24',
+            fontSizeUnit: 'px',
+            lineHeightValue: '28',
+            lineHeightUnit: 'px',
+          },
+          removed: false,
+        },
+      },
+    };
+
+    const rendered = renderCanvasItemHtml(block, item);
+    expect(rendered).toContain('Full Name');
+    expect(rendered).toContain('font-size: 24px');
+    expect(rendered).toContain('line-height: 28px');
+    expect(rendered).toContain('padding: 10px 0px 10px 0px');
+    expect(rendered).toContain('background-color:#f7f3e8');
+  });
+
   it('extracts heading, paragraph, and button for CTA sections', () => {
     const html = `
       <html><body>
@@ -530,6 +625,41 @@ describe('style replacement and rendering', () => {
     expect(output).toContain('<td style="padding:40px 0px 40px 0px;">');
     expect(output).toContain('UPDATE PREFERENCES');
     expect(output).not.toContain('Your experience matters.');
+  });
+
+  it('preserves outer wrapper padding for snippet-only table exports', () => {
+    const html = `
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tbody><tr>
+          <td style="padding:30px 24px 30px 24px;background-color:#1A1A1A;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+              <tbody><tr>
+                <td style="padding:12px 0px 0px 0px;background-color:#1A1A1A;">
+                  <p style="font-size:8px;line-height:125%;color:#E8E3D4;">Disclaimer copy</p>
+                </td>
+              </tr></tbody>
+            </table>
+          </td>
+        </tr></tbody>
+      </table>
+    `;
+
+    const blocks = extractBlocks(html);
+    const template = parseUploadedTemplate('snippet.html', html);
+    const output = buildOutputHtml(
+      template,
+      [
+        {
+          instanceId: 'instance-snippet-wrapper',
+          sourceBlockId: blocks[0].id,
+          overrides: {},
+        },
+      ],
+      blocks,
+    );
+
+    expect(output).toContain('<td style="padding:30px 24px 30px 24px;background-color:#1A1A1A;">');
+    expect(output).toContain('<td style="padding:12px 0px 0px 0px;background-color:#1A1A1A;">');
   });
 
   it('wraps exported table row fragments in tables for valid standalone output', () => {
