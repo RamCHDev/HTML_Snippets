@@ -435,6 +435,34 @@ function normalizeStyleValue(value: StyleValue | undefined, fallback = emptyPadd
   return fallback;
 }
 
+function paddingBoxesEqual(left: PaddingBoxValues, right: PaddingBoxValues): boolean {
+  return (
+    left.top.value === right.top.value &&
+    left.top.unit === right.top.unit &&
+    left.right.value === right.right.value &&
+    left.right.unit === right.right.unit &&
+    left.bottom.value === right.bottom.value &&
+    left.bottom.unit === right.bottom.unit &&
+    left.left.value === right.left.value &&
+    left.left.unit === right.left.unit
+  );
+}
+
+function stripPaddingFromElement(element: Element): void {
+  const styleAttribute = replacePaddingProperties(element.getAttribute('style') ?? '', {
+    top: '',
+    right: '',
+    bottom: '',
+    left: '',
+  });
+
+  if (styleAttribute) {
+    element.setAttribute('style', styleAttribute);
+  } else {
+    element.removeAttribute('style');
+  }
+}
+
 function expandPaddingShorthand(tokens: StyleValue[]): PaddingBoxValues {
   if (tokens.length === 0) {
     return {
@@ -601,6 +629,22 @@ function findContainerPaddingOwner(block: Element): Element {
   return block;
 }
 
+function findParentContainerPaddingOwner(block: Element, root: Element): Element | null {
+  let current: Element | null = block.parentElement;
+  while (current) {
+    if (
+      isPaddingCandidate(current) &&
+      readPaddingBox(current) &&
+      current !== block
+    ) {
+      return current;
+    }
+    if (current === root) break;
+    current = current.parentElement;
+  }
+  return null;
+}
+
 function extractStyleDefaults(element: Element, block?: Element): Partial<Record<StyleProperty, StyleValue>> {
   const styleMap = parseStyleAttribute(element.getAttribute('style') ?? '');
   return STYLE_PROPERTIES.reduce<Partial<Record<StyleProperty, StyleValue>>>((acc, property) => {
@@ -705,7 +749,7 @@ function collectPlainTextLeafElements(block: Element): Element[] {
   });
 }
 
-function collectEditableTargets(block: Element, type: SourceBlock['type']): EditableTarget[] {
+function collectEditableTargets(root: Element, block: Element, type: SourceBlock['type']): EditableTarget[] {
   const targets: EditableTarget[] = [];
 
   if (CONTAINER_TAGS.has(block.tagName) || type === 'composite-item' || type === 'repeated-item') {
@@ -723,6 +767,29 @@ function collectEditableTargets(block: Element, type: SourceBlock['type']): Edit
       textTag: block.tagName.toLowerCase(),
       styleTag: block.tagName.toLowerCase(),
       paddingTag: paddingOwner.tagName.toLowerCase(),
+    });
+  }
+
+  const parentPaddingOwner = findParentContainerPaddingOwner(block, root);
+  if (parentPaddingOwner) {
+    const previewPaddingOwner = findContainerPaddingOwner(block);
+    targets.push({
+      id: `container:parent:${elementPathFrom(root, parentPaddingOwner).join('.') || 'root'}`,
+      kind: 'container',
+      label: 'Parent container',
+      scope: 'document',
+      path: [],
+      stylePath: [],
+      paddingPath: elementPathFrom(block, previewPaddingOwner),
+      documentPath: elementPathFrom(root, parentPaddingOwner),
+      documentStylePath: elementPathFrom(root, parentPaddingOwner),
+      documentPaddingPath: elementPathFrom(root, parentPaddingOwner),
+      textContent: '',
+      paddingDefaults: readPaddingBox(parentPaddingOwner) ?? expandPaddingShorthand([]),
+      styleDefaults: extractStyleDefaults(parentPaddingOwner, root),
+      textTag: parentPaddingOwner.tagName.toLowerCase(),
+      styleTag: parentPaddingOwner.tagName.toLowerCase(),
+      paddingTag: parentPaddingOwner.tagName.toLowerCase(),
     });
   }
 
@@ -853,7 +920,7 @@ function makeSourceBlock(root: Element, element: Element, index: number, repeate
     path: elementPathFrom(root, element),
     structureSignature: signatureForElement(element),
     previewSurfaceStyle: extractPreviewSurfaceStyle(element, root),
-    editableTargets: collectEditableTargets(element, type),
+    editableTargets: collectEditableTargets(root, element, type),
   };
 }
 
@@ -1121,6 +1188,22 @@ export function renderCanvasItemHtml(block: SourceBlock, item: CanvasItem): stri
     const target = block.editableTargets.find((editableTarget) => editableTarget.id === targetId);
     if (!target) return;
     const effectiveOverride = withTargetDefaults(target, override);
+    if (target.scope === 'document') {
+      const previewPaddingElement = descendantByPath(root, target.paddingPath) ?? root;
+      let styleAttribute = previewPaddingElement.getAttribute('style') ?? '';
+      styleAttribute = replacePaddingProperties(styleAttribute, {
+        top: composeCssValue(effectiveOverride.style.paddingTopValue, effectiveOverride.style.paddingTopUnit),
+        right: composeCssValue(effectiveOverride.style.paddingRightValue, effectiveOverride.style.paddingRightUnit),
+        bottom: composeCssValue(effectiveOverride.style.paddingBottomValue, effectiveOverride.style.paddingBottomUnit),
+        left: composeCssValue(effectiveOverride.style.paddingLeftValue, effectiveOverride.style.paddingLeftUnit),
+      });
+      if (styleAttribute) {
+        previewPaddingElement.setAttribute('style', styleAttribute);
+      } else {
+        previewPaddingElement.removeAttribute('style');
+      }
+      return;
+    }
     const element = descendantByPath(root, target.path);
     if (!element) return;
     const styleElement = descendantByPath(root, target.stylePath) ?? element;
@@ -1178,6 +1261,63 @@ export function renderCanvasItemHtml(block: SourceBlock, item: CanvasItem): stri
     }
   });
 
+  const containerTarget = block.editableTargets.find((target) => target.kind === 'container' && target.scope !== 'document');
+  const parentContainerTarget = block.editableTargets.find((target) => target.kind === 'container' && target.scope === 'document');
+
+  if (containerTarget && parentContainerTarget) {
+    const containerOverride = withTargetDefaults(containerTarget, item.overrides[containerTarget.id] ?? createDefaultCanvasOverride(containerTarget));
+    const parentOverride = withTargetDefaults(parentContainerTarget, item.overrides[parentContainerTarget.id] ?? createDefaultCanvasOverride(parentContainerTarget));
+
+    const containerPadding: PaddingBoxValues = {
+      top: { value: containerOverride.style.paddingTopValue, unit: containerOverride.style.paddingTopUnit, raw: composeCssValue(containerOverride.style.paddingTopValue, containerOverride.style.paddingTopUnit) },
+      right: { value: containerOverride.style.paddingRightValue, unit: containerOverride.style.paddingRightUnit, raw: composeCssValue(containerOverride.style.paddingRightValue, containerOverride.style.paddingRightUnit) },
+      bottom: { value: containerOverride.style.paddingBottomValue, unit: containerOverride.style.paddingBottomUnit, raw: composeCssValue(containerOverride.style.paddingBottomValue, containerOverride.style.paddingBottomUnit) },
+      left: { value: containerOverride.style.paddingLeftValue, unit: containerOverride.style.paddingLeftUnit, raw: composeCssValue(containerOverride.style.paddingLeftValue, containerOverride.style.paddingLeftUnit) },
+    };
+    const parentPadding: PaddingBoxValues = {
+      top: { value: parentOverride.style.paddingTopValue, unit: parentOverride.style.paddingTopUnit, raw: composeCssValue(parentOverride.style.paddingTopValue, parentOverride.style.paddingTopUnit) },
+      right: { value: parentOverride.style.paddingRightValue, unit: parentOverride.style.paddingRightUnit, raw: composeCssValue(parentOverride.style.paddingRightValue, parentOverride.style.paddingRightUnit) },
+      bottom: { value: parentOverride.style.paddingBottomValue, unit: parentOverride.style.paddingBottomUnit, raw: composeCssValue(parentOverride.style.paddingBottomValue, parentOverride.style.paddingBottomUnit) },
+      left: { value: parentOverride.style.paddingLeftValue, unit: parentOverride.style.paddingLeftUnit, raw: composeCssValue(parentOverride.style.paddingLeftValue, parentOverride.style.paddingLeftUnit) },
+    };
+
+    if (paddingBoxesEqual(containerPadding, parentPadding)) {
+      const containerPaddingElement = descendantByPath(root, containerTarget.paddingPath);
+      if (containerPaddingElement) {
+        stripPaddingFromElement(containerPaddingElement);
+      }
+    }
+
+    const duplicatedPaddingDescendants = Array.from(root.querySelectorAll('*'))
+      .filter((candidate) => candidate.tagName !== 'TABLE')
+      .filter((candidate) => {
+        const candidatePadding = readPaddingBox(candidate);
+        return candidatePadding ? paddingBoxesEqual(candidatePadding, parentPadding) : false;
+      });
+
+    duplicatedPaddingDescendants.forEach((candidate) => {
+      stripPaddingFromElement(candidate);
+    });
+  } else if (parentContainerTarget) {
+    const parentOverride = withTargetDefaults(parentContainerTarget, item.overrides[parentContainerTarget.id] ?? createDefaultCanvasOverride(parentContainerTarget));
+    const parentPadding: PaddingBoxValues = {
+      top: { value: parentOverride.style.paddingTopValue, unit: parentOverride.style.paddingTopUnit, raw: composeCssValue(parentOverride.style.paddingTopValue, parentOverride.style.paddingTopUnit) },
+      right: { value: parentOverride.style.paddingRightValue, unit: parentOverride.style.paddingRightUnit, raw: composeCssValue(parentOverride.style.paddingRightValue, parentOverride.style.paddingRightUnit) },
+      bottom: { value: parentOverride.style.paddingBottomValue, unit: parentOverride.style.paddingBottomUnit, raw: composeCssValue(parentOverride.style.paddingBottomValue, parentOverride.style.paddingBottomUnit) },
+      left: { value: parentOverride.style.paddingLeftValue, unit: parentOverride.style.paddingLeftUnit, raw: composeCssValue(parentOverride.style.paddingLeftValue, parentOverride.style.paddingLeftUnit) },
+    };
+
+    Array.from(root.querySelectorAll('*'))
+      .filter((candidate) => candidate.tagName !== 'TABLE')
+      .filter((candidate) => {
+        const candidatePadding = readPaddingBox(candidate);
+        return candidatePadding ? paddingBoxesEqual(candidatePadding, parentPadding) : false;
+      })
+      .forEach((candidate) => {
+        stripPaddingFromElement(candidate);
+      });
+  }
+
   if (block.previewSurfaceStyle) {
     const surfaceTarget =
       root.tagName === 'TR'
@@ -1202,6 +1342,32 @@ export function renderCanvasItemHtml(block: SourceBlock, item: CanvasItem): stri
   }
 
   return root.outerHTML;
+}
+
+function applyDocumentScopedOverride(
+  bodyRoot: Element,
+  target: EditableTarget,
+  override: CanvasItem['overrides'][string],
+): void {
+  const paddingElement = target.documentPaddingPath
+    ? descendantByPath(bodyRoot, target.documentPaddingPath)
+    : null;
+  if (!paddingElement) return;
+
+  const effectiveOverride = withTargetDefaults(target, override);
+  let styleAttribute = paddingElement.getAttribute('style') ?? '';
+  styleAttribute = replacePaddingProperties(styleAttribute, {
+    top: composeCssValue(effectiveOverride.style.paddingTopValue, effectiveOverride.style.paddingTopUnit),
+    right: composeCssValue(effectiveOverride.style.paddingRightValue, effectiveOverride.style.paddingRightUnit),
+    bottom: composeCssValue(effectiveOverride.style.paddingBottomValue, effectiveOverride.style.paddingBottomUnit),
+    left: composeCssValue(effectiveOverride.style.paddingLeftValue, effectiveOverride.style.paddingLeftUnit),
+  });
+
+  if (styleAttribute) {
+    paddingElement.setAttribute('style', styleAttribute);
+  } else {
+    paddingElement.removeAttribute('style');
+  }
 }
 
 export function buildRenderableFragmentHtml(fragmentHtml: string): string {
@@ -1244,6 +1410,15 @@ export function buildOutputHtml(
   const doc = parseDocument(template.rawHtml);
   const root = findPrimaryContainer(doc.body);
   root.innerHTML = fragments;
+  items.forEach((item) => {
+    const block = blocks.find((candidate) => candidate.id === item.sourceBlockId);
+    if (!block) return;
+    Object.entries(item.overrides).forEach(([targetId, override]) => {
+      const target = block.editableTargets.find((editableTarget) => editableTarget.id === targetId);
+      if (!target || target.scope !== 'document') return;
+      applyDocumentScopedOverride(doc.body, target, override);
+    });
+  });
   if (!template.rawHtml.toLowerCase().includes('<html')) {
     const snippetRoot = getMeaningfulChildren(doc.body)[0] ?? root;
     return snippetRoot.outerHTML;

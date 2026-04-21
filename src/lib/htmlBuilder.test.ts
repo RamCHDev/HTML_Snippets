@@ -662,6 +662,150 @@ describe('style replacement and rendering', () => {
     expect(output).toContain('<td style="padding:12px 0px 0px 0px;background-color:#1A1A1A;">');
   });
 
+  it('fetches parent container padding defaults from the source file', () => {
+    const html = `
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tbody><tr>
+          <td style="padding:30px 24px 30px 24px;background-color:#1A1A1A;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+              <tbody><tr>
+                <td style="padding:12px 0px 0px 0px;background-color:#1A1A1A;">
+                  <p style="font-size:8px;line-height:125%;color:#E8E3D4;">Disclaimer copy</p>
+                </td>
+              </tr></tbody>
+            </table>
+          </td>
+        </tr></tbody>
+      </table>
+    `;
+
+    const [block] = extractBlocks(html);
+    const parentTarget = block.editableTargets.find((target) => target.label === 'Parent container');
+    expect(parentTarget).toBeDefined();
+    expect(parentTarget?.paddingDefaults.top.value).toBe('30');
+    expect(parentTarget?.paddingDefaults.right.value).toBe('24');
+    expect(parentTarget?.paddingDefaults.bottom.value).toBe('30');
+    expect(parentTarget?.paddingDefaults.left.value).toBe('24');
+  });
+
+  it('applies parent container padding overrides in generated html', () => {
+    const html = `
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tbody><tr>
+          <td style="padding:30px 24px 30px 24px;background-color:#1A1A1A;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+              <tbody><tr>
+                <td style="padding:12px 0px 0px 0px;background-color:#1A1A1A;">
+                  <p style="font-size:8px;line-height:125%;color:#E8E3D4;">Disclaimer copy</p>
+                </td>
+              </tr></tbody>
+            </table>
+          </td>
+        </tr></tbody>
+      </table>
+    `;
+
+    const [block] = extractBlocks(html);
+    const template = parseUploadedTemplate('snippet.html', html);
+    const parentTarget = block.editableTargets.find((target) => target.label === 'Parent container');
+    expect(parentTarget).toBeDefined();
+
+    const output = buildOutputHtml(
+      template,
+      [
+        {
+          instanceId: 'instance-parent-padding',
+          sourceBlockId: block.id,
+          overrides: {
+            [parentTarget!.id]: {
+              textContent: '',
+              style: {
+                paddingTopValue: '40',
+                paddingTopUnit: 'px',
+                paddingRightValue: '32',
+                paddingRightUnit: 'px',
+                paddingBottomValue: '40',
+                paddingBottomUnit: 'px',
+                paddingLeftValue: '32',
+                paddingLeftUnit: 'px',
+                fontSizeValue: '',
+                fontSizeUnit: 'px',
+                lineHeightValue: '',
+                lineHeightUnit: '',
+              },
+              removed: false,
+            },
+          },
+        },
+      ],
+      [block],
+    );
+
+    expect(output).toContain('padding: 40px 32px 40px 32px');
+    expect(output).toContain('background-color: #1A1A1A');
+  });
+
+  it('does not repeat identical outer wrapper padding in nested footer rows', () => {
+    const html = `
+      <table cellpadding="0" cellspacing="0" width="100%" role="presentation" style="background-color: #1A1A1A; min-width: 100%;" class="stylingblock-content-wrapper">
+        <tbody><tr>
+          <td style="padding: 40px 32px 24px 32px" class="stylingblock-content-wrapper camarker-inner">
+            <table align="center" cellpadding="0" cellspacing="0" role="presentation" width="100%">
+              <tbody><tr>
+                <td>
+                  <table align="center" cellpadding="0" cellspacing="0" role="presentation" width="100%">
+                    <tbody>
+                      <tr>
+                        <td style="padding: 40px 32px 24px 32px; background-color: #1A1A1A">
+                          <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
+                            <tbody><tr>
+                              <th align="left" width="33%"><a href="mailto:info@kimptonclub.com">info@kimptonclub.com</a></th>
+                              <th align="left" width="34%"><a href="tel:123-345-5678">212-257-2066</a></th>
+                              <th align="left" width="33%"><a href="https://kimptonclub.com">kimptonclub.com</a></th>
+                            </tr></tbody>
+                          </table>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 12px 0px 0px 0px; background-color: #1A1A1A">
+                          <p role="contentinfo" style="font-family: 'rotunda-variable', sans-serif; font-size: 8px; font-weight: 300; line-height: 125%; letter-spacing: 0.32px; color: #E8E3D4">
+                            THIS ADVERTISEMENT IS BEING USED FOR THE PURPOSE OF SOLICITING VACATION OWNERSHIP INTEREST SALES.
+                          </p>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </td>
+              </tr></tbody>
+            </table>
+          </td>
+        </tr></tbody>
+      </table>
+    `;
+
+    const blocks = extractBlocks(html);
+    const template = parseUploadedTemplate('footer.html', html);
+    const output = buildOutputHtml(
+      template,
+      [
+        {
+          instanceId: 'instance-footer-row',
+          sourceBlockId: blocks[0].id,
+          overrides: {},
+        },
+        {
+          instanceId: 'instance-footer-disclaimer',
+          sourceBlockId: blocks[1].id,
+          overrides: {},
+        },
+      ],
+      blocks,
+    );
+
+    expect(output.match(/padding:\s*40px 32px 24px 32px/g)?.length).toBe(1);
+    expect(output).toContain('padding: 12px 0px 0px 0px');
+  });
+
   it('wraps exported table row fragments in tables for valid standalone output', () => {
     const html = `
       <html><body>

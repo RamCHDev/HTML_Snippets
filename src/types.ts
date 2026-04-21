@@ -36,6 +36,10 @@ export interface EditableTarget {
   path: number[];
   stylePath: number[];
   paddingPath: number[];
+  scope?: 'block' | 'document';
+  documentPath?: number[];
+  documentStylePath?: number[];
+  documentPaddingPath?: number[];
   textContent: string;
   paddingDefaults: PaddingBoxValues;
   styleDefaults: Partial<Record<StyleProperty, StyleValue>>;
