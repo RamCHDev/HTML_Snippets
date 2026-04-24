@@ -81,10 +81,24 @@ function buildBlockPreviewDocument(template: UploadedTemplate, block: SourceBloc
   <head>
     ${template.headHtml}
     <style>
-      html, body { margin: 0; padding: 0; }
-      body { background: transparent; }
+      html, body { margin: 0; padding: 0; height: auto !important; min-height: 0 !important; }
+      body { background: transparent; overflow: hidden; }
       .builder-preview-surface {
         ${wrapperStyle}
+        display: inline-block;
+        width: 100%;
+        vertical-align: top;
+      }
+      .builder-preview-surface table,
+      .builder-preview-surface tbody,
+      .builder-preview-surface thead,
+      .builder-preview-surface tfoot,
+      .builder-preview-surface tr,
+      .builder-preview-surface td,
+      .builder-preview-surface th,
+      .builder-preview-surface div {
+        height: auto !important;
+        min-height: 0 !important;
       }
       .builder-preview-surface * {
         max-width: 100%;
@@ -206,6 +220,96 @@ function pathSummary(path: number[]) {
   return path.length === 0 ? 'root' : path.join('.');
 }
 
+export function documentTargetKey(target: EditableTarget): string | null {
+  if (target.scope !== 'document') return null;
+  return [
+    target.kind,
+    target.documentPath?.join('.') ?? '',
+    target.documentStylePath?.join('.') ?? '',
+    target.documentPaddingPath?.join('.') ?? '',
+  ].join('|');
+}
+
+export function isDocumentScopedTargetAvailable(
+  item: CanvasItem,
+  target: EditableTarget,
+  canvasItems: CanvasItem[],
+  allBlocks: SourceBlock[],
+): boolean {
+  if (target.scope !== 'document') return true;
+
+  const key = documentTargetKey(target);
+  if (!key) return true;
+
+  const owner = canvasItems.find((entry) => {
+    const block = allBlocks.find((candidate) => candidate.id === entry.sourceBlockId);
+    if (!block) return false;
+    return block.editableTargets.some((editableTarget) => documentTargetKey(editableTarget) === key);
+  });
+
+  return owner?.instanceId === item.instanceId;
+}
+
+function AutoHeightPreviewFrame({
+  title,
+  srcDoc,
+  className,
+}: {
+  title: string;
+  srcDoc: string;
+  className?: string;
+}) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const [height, setHeight] = useState(140);
+
+  function resizeFrame(frame: HTMLIFrameElement | null) {
+    if (!frame) return;
+    const doc = frame.contentDocument;
+    if (!doc) return;
+    const surface = doc.querySelector('.builder-preview-surface') as HTMLElement | null;
+    const surfaceHeight = surface ? Math.ceil(surface.getBoundingClientRect().height) : 0;
+    const bodyHeight = doc.body ? doc.body.scrollHeight : 0;
+    const docHeight = doc.documentElement ? doc.documentElement.scrollHeight : 0;
+    setHeight(surfaceHeight > 0 ? Math.max(surfaceHeight, 80) : Math.max(bodyHeight, docHeight, 80));
+
+    if (surface && frame.contentWindow?.ResizeObserver) {
+      const Observer = frame.contentWindow.ResizeObserver;
+      const observer = new Observer(() => {
+        const nextSurfaceHeight = Math.ceil(surface.getBoundingClientRect().height);
+        const nextBodyHeight = doc.body ? doc.body.scrollHeight : 0;
+        const nextDocHeight = doc.documentElement ? doc.documentElement.scrollHeight : 0;
+        setHeight(nextSurfaceHeight > 0 ? Math.max(nextSurfaceHeight, 80) : Math.max(nextBodyHeight, nextDocHeight, 80));
+      });
+      observer.observe(surface);
+      (frame as HTMLIFrameElement & { __builderObserver?: ResizeObserver }).__builderObserver?.disconnect?.();
+      (frame as HTMLIFrameElement & { __builderObserver?: ResizeObserver }).__builderObserver = observer as unknown as ResizeObserver;
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      const frame = frameRef.current as HTMLIFrameElement & { __builderObserver?: ResizeObserver };
+      frame?.__builderObserver?.disconnect?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    resizeFrame(frameRef.current);
+  }, [srcDoc]);
+
+  return (
+    <iframe
+      ref={frameRef}
+      className={className}
+      sandbox="allow-same-origin"
+      srcDoc={srcDoc}
+      title={title}
+      style={{ height: `${height}px` }}
+      onLoad={(event) => resizeFrame(event.currentTarget)}
+    />
+  );
+}
+
 export default function App() {
   const [template, setTemplate] = useState<UploadedTemplate | null>(null);
   const [blocks, setBlocks] = useState<SourceBlock[]>([]);
@@ -249,10 +353,23 @@ export default function App() {
   useEffect(() => {
     if (!activeController) return;
     const item = canvasItems.find((entry) => entry.instanceId === activeController.instanceId);
-    if (!item || !item.overrides[activeController.targetId]) {
+    const block = item ? allBlocks.find((entry) => entry.id === item.sourceBlockId) ?? null : null;
+    const target = block?.editableTargets.find((entry) => entry.id === activeController.targetId) ?? null;
+    if (!item || !target || !item.overrides[activeController.targetId] || !isTargetAvailableInInstance(item, target)) {
       setActiveController(null);
     }
-  }, [activeController, canvasItems]);
+  }, [activeController, canvasItems, allBlocks]);
+
+  function isFirstInstanceForSource(item: CanvasItem) {
+    return canvasItems.find((entry) => entry.sourceBlockId === item.sourceBlockId)?.instanceId === item.instanceId;
+  }
+
+  function isTargetAvailableInInstance(item: CanvasItem, target: EditableTarget) {
+    if (target.scope === 'document') {
+      return isDocumentScopedTargetAvailable(item, target, canvasItems, allBlocks);
+    }
+    return true;
+  }
 
   function resizePreviewFrame(
     frame: HTMLIFrameElement | null,
@@ -496,14 +613,13 @@ export default function App() {
                     +
                   </IconButton>
                 </div>
-                <div className="block-preview" style={previewSurfaceInlineStyle(block)}>
-                  {template ? (
-                    <iframe
-                      className="block-preview-frame"
-                      sandbox="allow-same-origin"
-                      srcDoc={buildBlockPreviewDocument(template, block, block.originalHtml)}
-                      title={`${block.label} preview`}
-                    />
+                  <div className="block-preview" style={previewSurfaceInlineStyle(block)}>
+                    {template ? (
+                      <AutoHeightPreviewFrame
+                        className="block-preview-frame"
+                        srcDoc={buildBlockPreviewDocument(template, block, block.originalHtml)}
+                        title={`${block.label} preview`}
+                      />
                   ) : (
                     <div dangerouslySetInnerHTML={{ __html: buildRenderableFragmentHtml(block.originalHtml) }} />
                   )}
@@ -596,9 +712,8 @@ export default function App() {
                   </div>
                   <div className="block-preview" style={previewSurfaceInlineStyle(block)}>
                     {template ? (
-                      <iframe
+                      <AutoHeightPreviewFrame
                         className="block-preview-frame"
-                        sandbox="allow-same-origin"
                         srcDoc={buildBlockPreviewDocument(template, block, renderCanvasItemHtml(block, item))}
                         title={`${block.label} canvas preview`}
                       />
@@ -610,12 +725,15 @@ export default function App() {
                     {block.editableTargets.map((target) => {
                       const override = item.overrides[target.id];
                       if (!override) return null;
+                      const isAvailable = isTargetAvailableInInstance(item, target);
+                      if (!isAvailable) return null;
                       const isActive = activeController?.instanceId === item.instanceId && activeController.targetId === target.id;
                       return (
                         <button
                           type="button"
                           key={target.id}
                           className={`element-chip ${isActive ? 'active' : ''} ${override.removed ? 'removed' : ''}`}
+                          title={target.label}
                           onClick={(event) => {
                             event.stopPropagation();
                             openTargetController(item.instanceId, target.id);
@@ -627,7 +745,7 @@ export default function App() {
                       );
                     })}
                   </div>
-                  {activeTarget && activeOverride ? (
+                  {activeTarget && activeOverride && isTargetAvailableInInstance(item, activeTarget) ? (
                     <section className={`inline-controller ${activeOverride.removed ? 'is-removed' : ''}`}>
                       <div className="inline-controller-head">
                         <div className="target-chip">

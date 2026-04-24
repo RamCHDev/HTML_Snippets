@@ -195,19 +195,18 @@ button:disabled {
 }
 
 .block-preview {
-  padding: 18px;
+  padding: 12px;
   border-top: 1px solid rgba(164, 177, 206, 0.25);
   background:
     linear-gradient(180deg, rgba(244, 248, 255, 0.9), rgba(255, 255, 255, 0.95)),
     linear-gradient(90deg, rgba(212, 220, 238, 0.22), transparent);
-  max-height: 260px;
+  max-height: 420px;
   overflow: auto;
 }
 
 .block-preview-frame {
   display: block;
   width: 100%;
-  min-height: 220px;
   border: 0;
   background: transparent;
 }
@@ -346,6 +345,13 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.element-chip:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  background: #f6f8fc;
+  color: #7f8aa3;
 }
 
 .element-chip.active {

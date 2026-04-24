@@ -658,8 +658,8 @@ describe('style replacement and rendering', () => {
       blocks,
     );
 
-    expect(output).toContain('<td style="padding:30px 24px 30px 24px;background-color:#1A1A1A;">');
-    expect(output).toContain('<td style="padding:12px 0px 0px 0px;background-color:#1A1A1A;">');
+    expect(output).toContain('padding:30px 24px 30px 24px;background-color:#1A1A1A;');
+    expect(output).toContain('padding: 12px 0px 0px 0px; background-color: #1A1A1A');
   });
 
   it('fetches parent container padding defaults from the source file', () => {
@@ -743,6 +743,129 @@ describe('style replacement and rendering', () => {
 
     expect(output).toContain('padding: 40px 32px 40px 32px');
     expect(output).toContain('background-color: #1A1A1A');
+  });
+
+  it('stacks cloned td-based paragraph blocks as separate rows instead of columns', () => {
+    const html = `
+      <table cellpadding="0" cellspacing="0" role="presentation" width="100%">
+        <tbody><tr>
+          <td align="center" style="padding:30px 7% 30px 7%;font-family:'Montserrat', Arial, Helvetica, sans-serif;" valign="top">
+            <p style="text-align: center;font-size:20px;line-height:28px;font-family:'Montserrat', Arial, Helvetica, sans-serif;margin:0px;padding:0px;">
+              For each survey you complete, you'll have a chance to win a $1,500 or 1 of 4 $250 prepaid credit cards.* Look out for the first survey in 2 days.
+            </p>
+          </td>
+        </tr></tbody>
+      </table>
+    `;
+
+    const [block] = extractBlocks(html);
+    const template = parseUploadedTemplate('paragraph-snippet.html', html);
+    const output = buildOutputHtml(
+      template,
+      [
+        { instanceId: 'instance-row-1', sourceBlockId: block.id, overrides: {} },
+        { instanceId: 'instance-row-2', sourceBlockId: block.id, overrides: {} },
+      ],
+      [block],
+    );
+
+    expect(output.match(/<tr>/g)?.length).toBe(2);
+    expect(output.match(/<td align="center"/g)?.length).toBe(2);
+  });
+
+  it('stacks duplicated nested paragraph td blocks as rows for the energcare-style structure', () => {
+    const html = `
+      <table cellpadding="0" cellspacing="0" width="100%" role="presentation" style="background-color: #FFFFFF; min-width: 100%;" class="stylingblock-content-wrapper">
+        <tbody><tr><td style="padding: 0px 24px;" class="stylingblock-content-wrapper camarker-inner">
+          <table cellspacing="0" cellpadding="0" role="presentation" style="width: 100%;">
+            <tbody><tr>
+              <td style="padding: 0px 24px 34px 24px; background-color: #F1F7FB" class="stylingblock-content-wrapper camarker-inner">
+                <p data-element="Paragraph" role="contentinfo" style="margin: 0px; font-family: 'EnercareGrotesk-Regular',sans-serif; font-size: 16px; line-height: 22px; font-weight: 400; color: #1A1A1A; letter-spacing: 0.016px">
+                  For each survey you complete, you'll have a chance to win a $1,500 or 1 of 4 $250 prepaid credit cards.* Look out for the first survey in 2 days.
+                </p>
+              </td>
+            </tr></tbody>
+          </table>
+        </td></tr></tbody>
+      </table>
+    `;
+
+    const [block] = extractBlocks(html);
+    const template = parseUploadedTemplate('enercare-paragraph.html', html);
+    const output = buildOutputHtml(
+      template,
+      [
+        { instanceId: 'enercare-row-1', sourceBlockId: block.id, overrides: {} },
+        { instanceId: 'enercare-row-2', sourceBlockId: block.id, overrides: {} },
+      ],
+      [block],
+    );
+
+    expect(output.match(/<tr>/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(output.match(/background-color: #F1F7FB/g)?.length ?? 0).toBe(2);
+    expect(output).not.toContain('</td>\n<td style="padding: 0px 24px 34px 24px; background-color: #F1F7FB"');
+  });
+
+  it('stacks duplicated td fragments when the primary container is a table root', () => {
+    const html = `
+      <table role="presentation" width="100%">
+        <tbody>
+          <tr>
+            <td style="padding: 12px; background-color: #eef5fb;">
+              <p style="margin: 0;">One paragraph block.</p>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    `;
+
+    const [block] = extractBlocks(html);
+    const template = parseUploadedTemplate('table-root.html', html);
+    const output = buildOutputHtml(
+      template,
+      [
+        { instanceId: 'table-root-1', sourceBlockId: block.id, overrides: {} },
+        { instanceId: 'table-root-2', sourceBlockId: block.id, overrides: {} },
+      ],
+      [block],
+    );
+
+    expect(output.match(/<tr>/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(output.match(/background-color: #eef5fb/g)?.length ?? 0).toBe(2);
+    expect(output).not.toContain('</td><td style="padding: 12px; background-color: #eef5fb;"');
+  });
+
+  it('keeps duplicated td fragments inside tbody when the table also has a thead', () => {
+    const html = `
+      <table role="presentation" width="100%">
+        <thead>
+          <tr><th>Heading</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style="padding: 12px; background-color: #eef5fb;">
+              <p style="margin: 0;">One paragraph block.</p>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    `;
+
+    const [block] = extractBlocks(html);
+    const template = parseUploadedTemplate('table-head-body.html', html);
+    const output = buildOutputHtml(
+      template,
+      [
+        { instanceId: 'table-head-body-1', sourceBlockId: block.id, overrides: {} },
+        { instanceId: 'table-head-body-2', sourceBlockId: block.id, overrides: {} },
+      ],
+      [block],
+    );
+
+    expect(output).toContain('<thead>');
+    expect(output).toContain('<th>Heading</th>');
+    expect(output.match(/<tbody>/g)?.length).toBe(1);
+    expect(output).toMatch(/<tbody>\s*<tr>[\s\S]*<\/tr>\s*<tr>[\s\S]*<\/tr>\s*<\/tbody>/);
   });
 
   it('does not repeat identical outer wrapper padding in nested footer rows', () => {
@@ -1077,6 +1200,56 @@ describe('real file validation', () => {
     expect(paragraphTarget?.paddingDefaults.right.unit).toBe('%');
     expect(paragraphTarget?.paddingDefaults.bottom.value).toBe('30');
     expect(paragraphTarget?.paddingDefaults.left.value).toBe('7');
+  });
+
+  it.runIf(existsSync(ihgFilePath))('stacks duplicated paragraph blocks vertically in Test_IHG.html output', () => {
+    const html = readFileSync(ihgFilePath, 'utf8');
+    const blocks = extractBlocks(html);
+    const template = parseUploadedTemplate('Test_IHG.html', html);
+    const paragraphBlock = blocks.find((block) => block.type === 'paragraph');
+    const buttonBlock = blocks.find((block) => block.type === 'button');
+
+    expect(paragraphBlock).toBeDefined();
+    expect(buttonBlock).toBeDefined();
+
+    const output = buildOutputHtml(
+      template,
+      [
+        { instanceId: 'ihg-paragraph-1', sourceBlockId: paragraphBlock!.id, overrides: {} },
+        { instanceId: 'ihg-paragraph-2', sourceBlockId: paragraphBlock!.id, overrides: {} },
+      ],
+      blocks,
+    );
+
+    expect(output.match(/<tr>/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(output.match(/<td align="center"/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(output).not.toContain('</td><td align="center"');
+  });
+
+  it.runIf(existsSync(ihgFilePath))('keeps paragraph plus button blocks as stacked rows in Test_IHG.html output', () => {
+    const html = readFileSync(ihgFilePath, 'utf8');
+    const blocks = extractBlocks(html);
+    const template = parseUploadedTemplate('Test_IHG.html', html);
+    const paragraphBlock = blocks.find((block) => block.type === 'paragraph');
+    const buttonBlock = blocks.find((block) => block.type === 'button');
+
+    expect(paragraphBlock).toBeDefined();
+    expect(buttonBlock).toBeDefined();
+
+    const output = buildOutputHtml(
+      template,
+      [
+        { instanceId: 'ihg-paragraph', sourceBlockId: paragraphBlock!.id, overrides: {} },
+        { instanceId: 'ihg-button', sourceBlockId: buttonBlock!.id, overrides: {} },
+      ],
+      blocks,
+    );
+
+    expect(output.match(/<table[^>]+role="presentation"[^>]*width="100%"/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(output).toContain('text-align: center;font-size:20px;line-height:28px');
+    expect(output).toContain('UPDATE PREFERENCES');
+    expect(output).not.toContain('</p>\n\n        <table border="0"');
+    expect(output).toContain('UPDATE PREFERENCES');
   });
 
   it.runIf(existsSync(ec02FilePath))('keeps text styling bound to the styled text cell in EC_02.html', () => {

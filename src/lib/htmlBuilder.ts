@@ -1394,22 +1394,93 @@ function bodyAttributesToString(attributes: Record<string, string>): string {
     .join(' ');
 }
 
+function findPreferredTableSection(table: Element): Element | undefined {
+  return (
+    (Array.from(table.children).find((child) => child.tagName === 'TBODY') as Element | undefined) ??
+    (Array.from(table.children).find((child) => child.tagName === 'THEAD') as Element | undefined) ??
+    (Array.from(table.children).find((child) => child.tagName === 'TFOOT') as Element | undefined)
+  );
+}
+
 export function buildOutputHtml(
   template: UploadedTemplate,
   items: CanvasItem[],
   blocks: SourceBlock[],
 ): string {
-  const fragments = items
+  const renderedFragments = items
     .map((item) => {
       const block = blocks.find((candidate) => candidate.id === item.sourceBlockId);
       return block ? renderCanvasItemHtml(block, item) : '';
     })
-    .filter(Boolean)
-    .join('\n');
+    .filter(Boolean);
 
   const doc = parseDocument(template.rawHtml);
   const root = findPrimaryContainer(doc.body);
-  root.innerHTML = fragments;
+  const fragmentRoots = renderedFragments.map((fragment) => createFragmentRoot(fragment));
+  const cellFragmentsOnly = fragmentRoots.every((element) => element.tagName === 'TD' || element.tagName === 'TH');
+  const normalizedFragments = renderedFragments.map((fragment, index) => {
+    const tagName = fragmentRoots[index]?.tagName;
+    if (
+      (root.tagName === 'TD' || root.tagName === 'TH') &&
+      tagName &&
+      ['TD', 'TH', 'TR', 'TBODY', 'THEAD', 'TFOOT'].includes(tagName)
+    ) {
+      return buildRenderableFragmentHtml(fragment);
+    }
+    return fragment;
+  });
+
+  function buildRowsFromCellFragments(section: Element, prototypeRow?: Element | null) {
+    const rows = fragmentRoots.map((fragmentRoot) => {
+      const nextRow = prototypeRow
+        ? (prototypeRow.cloneNode(false) as Element)
+        : (section.ownerDocument?.createElement('tr') ?? document.createElement('tr'));
+      nextRow.innerHTML = '';
+      nextRow.appendChild(fragmentRoot.cloneNode(true));
+      return nextRow;
+    });
+    section.replaceChildren(...rows);
+  }
+
+  if (root.tagName === 'TR' && cellFragmentsOnly) {
+    const parent = root.parentElement;
+    if (parent) {
+      buildRowsFromCellFragments(parent, root);
+    } else {
+      root.innerHTML = normalizedFragments.join('\n');
+    }
+  } else if (
+    (root.tagName === 'TD' || root.tagName === 'TH') &&
+    cellFragmentsOnly
+  ) {
+    const row = root.parentElement;
+    const section = row?.parentElement;
+    const rowChildren = row ? getMeaningfulChildren(row) : [];
+    if (row && section && row.tagName === 'TR' && rowChildren.length === 1) {
+      buildRowsFromCellFragments(section, row);
+    } else {
+      root.innerHTML = normalizedFragments.join('\n');
+    }
+  } else if (
+    (root.tagName === 'TABLE' || root.tagName === 'TBODY' || root.tagName === 'THEAD' || root.tagName === 'TFOOT') &&
+    cellFragmentsOnly
+  ) {
+    if (root.tagName === 'TABLE') {
+      let section = findPreferredTableSection(root);
+      if (!section) {
+        section = root.ownerDocument?.createElement('tbody') ?? document.createElement('tbody');
+        root.replaceChildren(section);
+      }
+      const prototypeRow = Array.from(section.children).find((child) => child.tagName === 'TR') as Element | undefined;
+      buildRowsFromCellFragments(section, prototypeRow ?? null);
+    } else {
+      const prototypeRow = Array.from(root.children).find((child) => child.tagName === 'TR') as Element | undefined;
+      buildRowsFromCellFragments(root, prototypeRow ?? null);
+    }
+  } else {
+    root.innerHTML = normalizedFragments.join('\n');
+  }
+
   items.forEach((item) => {
     const block = blocks.find((candidate) => candidate.id === item.sourceBlockId);
     if (!block) return;
